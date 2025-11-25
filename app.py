@@ -3,25 +3,26 @@ import pandas as pd
 import numpy as np
 import unicodedata
 from pathlib import Path
+from datetime import datetime
 
 # =========================
-# Configuración básica
+# CONFIGURACIÓN BÁSICA
 # =========================
 st.set_page_config(
-    page_title="Dashboard Telemetría",
-    layout="wide"
+    page_title="Dashboard Telemetría & GPS",
+    layout="wide",
 )
 
-DATA_DIR = Path("data")
-FILE_CURRENT = DATA_DIR / "master_status_inner_qs_ready.csv"
-FILE_HIST = DATA_DIR / "historico_conectividad.xlsx"
+DATA_DIR = Path(__file__).parent / "data"
+PATH_STATUS = DATA_DIR / "master_status_inner_qs_ready.csv"
+PATH_HIST   = DATA_DIR / "historico_conectividad.xlsx"
+
+ORDER5 = ["Conectado 0-2", "Intermitente 3-14", "Limitado 15-30+",
+          "Desconectado 31+", "Nunca"]
 
 # =========================
-# Helpers
+# HELPERS
 # =========================
-
-ORDER5 = ["Conectado 0-2", "Intermitente 3-14", "Limitado 15-30+", "Desconectado 31+", "Nunca"]
-
 def no_accents_upper(s):
     if pd.isna(s):
         return ""
@@ -31,306 +32,316 @@ def no_accents_upper(s):
 
 def clasificar_5rangos(ts, dias):
     """
-    ts   : Series datetime (NaT -> Nunca)
-    dias : Series numérica (días desde última conexión)
+    5 rangos usando:
+      - ts: timestamp (NaT => 'Nunca')
+      - dias: días desde última conexión (Int)
     """
     out = pd.Series(index=dias.index, dtype="object")
-    na = ts.isna()
-    out[na] = "Nunca"
-    m = ~na
-    out[m & (dias <= 2)] = "Conectado 0-2"
-    out[m & dias.between(3, 14, inclusive="both")] = "Intermitente 3-14"
+    is_na_ts = ts.isna()
+    out[is_na_ts] = "Nunca"
+    m = ~is_na_ts
+    out[m & (dias <= 2)]                             = "Conectado 0-2"
+    out[m & dias.between(3, 14, inclusive="both")]  = "Intermitente 3-14"
     out[m & dias.between(15, 30, inclusive="both")] = "Limitado 15-30+"
-    out[m & (dias >= 31)] = "Desconectado 31+"
+    out[m & (dias >= 31)]                           = "Desconectado 31+"
     return pd.Categorical(out, categories=ORDER5, ordered=True)
 
 def safe_pct(num, den):
-    num = num.astype(float)
-    den = den.astype(float).replace(0, np.nan)
-    return (num / den * 100).round(2).fillna(0.0)
+    num = float(num)
+    den = float(den) if den else 0.0
+    return round(num / den * 100, 2) if den > 0 else 0.0
 
+# =========================
+# CARGA DE DATOS
+# =========================
 @st.cache_data
-def load_current():
-    if not FILE_CURRENT.exists():
-        st.error(f"No encuentro el archivo {FILE_CURRENT}")
-        return None
+def load_status_df():
+    df = pd.read_csv(PATH_STATUS)
 
-    df = pd.read_csv(FILE_CURRENT)
+    # Normaliza nombres clave si falta algo
+    if "REGLA GENERAL DE REPORTABILIDAD" not in df.columns:
+        st.warning("No encuentro la columna 'REGLA GENERAL DE REPORTABILIDAD' en el CSV.")
+        df["REGLA GENERAL DE REPORTABILIDAD"] = ""
 
-    # Normaliza columnas clave
-    if "VIN" not in df.columns:
-        st.error("El CSV no tiene columna 'VIN'.")
-        return None
+    # Normaliza regla
+    df["regla_norm"] = df["REGLA GENERAL DE REPORTABILIDAD"].map(no_accents_upper)
 
-    # regla_norm
-    if "regla_norm" not in df.columns and "REGLA GENERAL DE REPORTABILIDAD" in df.columns:
-        df["regla_norm"] = df["REGLA GENERAL DE REPORTABILIDAD"].map(no_accents_upper)
-    elif "regla_norm" in df.columns:
-        df["regla_norm"] = df["regla_norm"].map(no_accents_upper)
-    else:
-        df["regla_norm"] = ""
-
-    # Timestamps
+    # Fechas
     for c in ["gps_timestamp", "can_timestamp"]:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
 
-    # Días: acepta days_can/dias_sin_can, days_gps/dias_sin_gps
-    if "days_can" in df.columns:
-        df["days_can"] = pd.to_numeric(df["days_can"], errors="coerce")
-    elif "dias_sin_can" in df.columns:
-        df["days_can"] = pd.to_numeric(df["dias_sin_can"], errors="coerce")
-    else:
-        if "can_timestamp" in df.columns:
-            today = pd.Timestamp.utcnow().normalize()
-            can_date = pd.to_datetime(df["can_timestamp"].dt.date, errors="coerce")
-            df["days_can"] = (today - can_date).dt.days
-        else:
-            df["days_can"] = np.nan
+    # Día de hoy (naive)
+    today = pd.Timestamp.utcnow().normalize()
 
-    if "days_gps" in df.columns:
-        df["days_gps"] = pd.to_numeric(df["days_gps"], errors="coerce")
-    elif "dias_sin_gps" in df.columns:
-        df["days_gps"] = pd.to_numeric(df["dias_sin_gps"], errors="coerce")
+    # Días desde última conexión
+    if "gps_timestamp" in df.columns:
+        gps_date = pd.to_datetime(df["gps_timestamp"].dt.date, errors="coerce")
+        df["days_gps"] = (today - gps_date).dt.days
+        df["days_gps"] = df["days_gps"].fillna(9999).astype(int)
     else:
-        if "gps_timestamp" in df.columns:
-            today = pd.Timestamp.utcnow().normalize()
-            gps_date = pd.to_datetime(df["gps_timestamp"].dt.date, errors="coerce")
-            df["days_gps"] = (today - gps_date).dt.days
-        else:
-            df["days_gps"] = np.nan
+        df["days_gps"] = 9999
 
-    # Empresa
-    if "Empresa" not in df.columns:
-        df["Empresa"] = "SIN_EMPRESA"
+    if "can_timestamp" in df.columns:
+        can_date = pd.to_datetime(df["can_timestamp"].dt.date, errors="coerce")
+        df["days_can"] = (today - can_date).dt.days
+        df["days_can"] = df["days_can"].fillna(9999).astype(int)
+    else:
+        df["days_can"] = 9999
 
     # Estados 5 rangos
-    # Telemetría: sólo regla_norm == 'TELEMETRIA'
-    mask_tlm = df["regla_norm"] == "TELEMETRIA"
-    df["estado_telemetria"] = pd.Categorical(["No aplica"] * len(df),
-                                             categories=ORDER5 + ["No aplica"],
-                                             ordered=True)
-    if "can_timestamp" in df.columns:
-        can_cat = clasificar_5rangos(df["can_timestamp"], df["days_can"])
-        df.loc[mask_tlm, "estado_telemetria"] = can_cat[mask_tlm].astype(object)
+    df["estado_telemetria"] = clasificar_5rangos(df.get("can_timestamp", pd.NaT), df["days_can"])
+    df["gps_status_any"]    = clasificar_5rangos(df.get("gps_timestamp", pd.NaT), df["days_gps"])
 
-    # GPS según REGLA (regla_norm != TELEMETRIA)
-    mask_gps_regla = ~mask_tlm
-    df["gps_status_regla"] = pd.Categorical(["No aplica"] * len(df),
+    # GPS según regla (≠ Telemetría)
+    mask_gps_regla = df["regla_norm"] != "TELEMETRIA"
+    gps_regla = pd.Categorical(["No aplica"] * len(df),
+                               categories=ORDER5 + ["No aplica"],
+                               ordered=True)
+    gps_regla = pd.Series(list(gps_regla), index=df.index, dtype="object")
+    tmp = clasificar_5rangos(df.get("gps_timestamp", pd.NaT), df["days_gps"]).astype(object)
+    gps_regla[mask_gps_regla] = tmp[mask_gps_regla]
+    df["gps_status_regla"] = pd.Categorical(gps_regla,
                                             categories=ORDER5 + ["No aplica"],
                                             ordered=True)
-    if "gps_timestamp" in df.columns:
-        gps_cat = clasificar_5rangos(df["gps_timestamp"], df["days_gps"])
-        df.loc[mask_gps_regla, "gps_status_regla"] = gps_cat[mask_gps_regla].astype(object)
-
-    # GPS global (any)
-    df["gps_status_any"] = clasificar_5rangos(df["gps_timestamp"], df["days_gps"]) \
-        if "gps_timestamp" in df.columns else pd.Categorical(["Nunca"] * len(df),
-                                                             categories=ORDER5,
-                                                             ordered=True)
-
-    # sacamos duplicados por VIN (nos quedamos con 1 fila por VIN)
-    df = df.sort_values("VIN").drop_duplicates(subset=["VIN"], keep="first")
 
     return df
 
-
 @st.cache_data
-def load_historico():
-    if not FILE_HIST.exists():
-        return None
-
+def load_historico_df():
     try:
-        hist = pd.read_excel(FILE_HIST)
-    except Exception:
-        hist = pd.read_excel(FILE_HIST, sheet_name=0)
-
+        hist = pd.read_excel(PATH_HIST)
+    except FileNotFoundError:
+        return None
     if "snapshot_date" in hist.columns:
         hist["snapshot_date"] = pd.to_datetime(hist["snapshot_date"], errors="coerce")
     return hist
 
+df_status = load_status_df()
+hist_df   = load_historico_df()
 
 # =========================
-#  UI
+# SIDEBAR FILTROS
 # =========================
+st.sidebar.title("Filtros")
 
-st.title("📊 Dashboard Telemetría & GPS – CoPiloto")
+# Filtro por Empresa
+empresas = sorted(df_status.get("Empresa", pd.Series(["SIN_EMPRESA"])).fillna("SIN_EMPRESA").unique())
+empresa_sel = st.sidebar.multiselect(
+    "Empresa",
+    options=empresas,
+    default=empresas  # todas por defecto
+)
 
-df_current = load_current()
-hist = load_historico()
+# Filtro por modelo de dispositivo (opcional)
+if "device_model" in df_status.columns:
+    modelos = sorted(df_status["device_model"].fillna("SIN_MODELO").unique())
+    modelo_sel = st.sidebar.multiselect(
+        "Modelo dispositivo",
+        options=modelos,
+        default=modelos
+    )
+else:
+    modelo_sel = None
 
-if df_current is None:
-    st.stop()
+# Aplicar filtros
+mask_emp = df_status.get("Empresa", "SIN_EMPRESA").fillna("SIN_EMPRESA").isin(empresa_sel)
+if modelo_sel is not None:
+    mask_mod = df_status["device_model"].fillna("SIN_MODELO").isin(modelo_sel)
+else:
+    mask_mod = True
 
-st.sidebar.header("Opciones")
-show_raw = st.sidebar.checkbox("Mostrar tabla raw (foto actual)", False)
+df_f = df_status[mask_emp & mask_mod].copy()
 
 # =========================
-# 1) KPIs actuales
+# CÁLCULO DE KPIs (subset filtrado)
 # =========================
-st.subheader("1. KPIs de conectividad (foto actual)")
 
 # --- Telemetría: regla = TELEMETRIA ---
-df_tlm = df_current[df_current["regla_norm"] == "TELEMETRIA"].copy()
-tele_total = len(df_tlm)
+tele = df_f[df_f["regla_norm"] == "TELEMETRIA"].copy()
+tele_total = len(tele)
+tele_0_30  = len(tele[tele["days_can"] <= 30])
+tele_31p   = len(tele[tele["days_can"] >= 31])
+tele_nunca = len(tele[tele["can_timestamp"].isna()])
 
-tele_0_30 = len(df_tlm[df_tlm["days_can"] <= 30])
-tele_31p  = len(df_tlm[df_tlm["days_can"] >= 31])
-tele_nunca = len(df_tlm[df_tlm["can_timestamp"].isna()])
+tele_0_30_pct  = safe_pct(tele_0_30, tele_total)
+tele_31p_pct   = safe_pct(tele_31p,  tele_total)
+tele_nunca_pct = safe_pct(tele_nunca, tele_total)
 
-pct_tele_0_30  = safe_pct(pd.Series([tele_0_30]), pd.Series([tele_total]))[0] if tele_total else 0
-pct_tele_31p   = safe_pct(pd.Series([tele_31p]),   pd.Series([tele_total]))[0] if tele_total else 0
-pct_tele_nunca = safe_pct(pd.Series([tele_nunca]), pd.Series([tele_total]))[0] if tele_total else 0
+# --- GPS (según REGLA ≠ Telemetría) ---
+gps_regla = df_f[df_f["regla_norm"] != "TELEMETRIA"].copy()
+gpsr_total = len(gps_regla)
+gpsr_0_15  = len(gps_regla[gps_regla["days_gps"] <= 15])
+gpsr_16p   = len(gps_regla[gps_regla["days_gps"] >= 16])
+gpsr_nunca = len(gps_regla[gps_regla["gps_timestamp"].isna()])
 
-# --- GPS por REGLA: regla != TELEMETRIA ---
-df_gps_regla = df_current[df_current["regla_norm"] != "TELEMETRIA"].copy()
-gps_regla_total = len(df_gps_regla)
+gpsr_0_15_pct  = safe_pct(gpsr_0_15, gpsr_total)
+gpsr_16p_pct   = safe_pct(gpsr_16p,  gpsr_total)
+gpsr_nunca_pct = safe_pct(gpsr_nunca, gpsr_total)
 
-gps_regla_0_15 = len(df_gps_regla[df_gps_regla["days_gps"] <= 15])
-gps_regla_16p  = len(df_gps_regla[df_gps_regla["days_gps"] >= 16])
-gps_regla_nunca = len(df_gps_regla[df_gps_regla["gps_timestamp"].isna()])
+# --- GPS GLOBAL (todas las filas filtradas) ---
+gps_all = df_f.copy()
+gpsa_total = len(gps_all)
+gpsa_0_15  = len(gps_all[gps_all["days_gps"] <= 15])
+gpsa_16p   = len(gps_all[gps_all["days_gps"] >= 16])
+gpsa_nunca = len(gps_all[gps_all["gps_timestamp"].isna()])
 
-pct_gpsr_0_15  = safe_pct(pd.Series([gps_regla_0_15]), pd.Series([gps_regla_total]))[0] if gps_regla_total else 0
-pct_gpsr_16p   = safe_pct(pd.Series([gps_regla_16p]),  pd.Series([gps_regla_total]))[0] if gps_regla_total else 0
-pct_gpsr_nunca = safe_pct(pd.Series([gps_regla_nunca]),pd.Series([gps_regla_total]))[0] if gps_regla_total else 0
+gpsa_0_15_pct  = safe_pct(gpsa_0_15, gpsa_total)
+gpsa_16p_pct   = safe_pct(gpsa_16p,  gpsa_total)
+gpsa_nunca_pct = safe_pct(gpsa_nunca, gpsa_total)
 
-# --- GPS GLOBAL (todas las unidades con timestamp GPS) ---
-gps_all = df_current.copy()
-gps_all_total = len(gps_all)
-gps_all_0_15  = len(gps_all[gps_all["days_gps"] <= 15])
-gps_all_16p   = len(gps_all[gps_all["days_gps"] >= 16])
-gps_all_nunca = len(gps_all[gps_all["gps_timestamp"].isna()])
+# =========================
+# LAYOUT PRINCIPAL
+# =========================
+st.title("Dashboard de Conectividad Telemetría & GPS")
 
-pct_gps_all_0_15  = safe_pct(pd.Series([gps_all_0_15]), pd.Series([gps_all_total]))[0] if gps_all_total else 0
-pct_gps_all_16p   = safe_pct(pd.Series([gps_all_16p]),  pd.Series([gps_all_total]))[0] if gps_all_total else 0
-pct_gps_all_nunca = safe_pct(pd.Series([gps_all_nunca]),pd.Series([gps_all_total]))[0] if gps_all_total else 0
+st.markdown(
+    f"**Unidades en muestra (filtradas):** {len(df_f):,}  "
+    f"| **Telemetría (regla=TELEMETRIA):** {tele_total:,}  "
+    f"| **GPS (regla≠Telemetría):** {gpsr_total:,}"
+)
+
+# ---------- KPIs ----------
+st.subheader("KPIs Principales")
 
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.markdown("**Telemetría – % conectados (0–30 días)**")
-    st.metric("Telemetría 0–30 días", f"{pct_tele_0_30:.1f} %", help=f"Base: {tele_total} VIN con regla Telemetría")
+    st.metric("Telemetría 0–30 días", f"{tele_0_30_pct:.2f} %", help="% de unidades con REGLA=Telemetría con CAN en 0–30 días")
+    st.metric("Telemetría Desconectado 31+ días", f"{tele_31p_pct:.2f} %")
+    st.metric("Telemetría Nunca conectado", f"{tele_nunca_pct:.2f} %")
+
 with col2:
-    st.markdown("**GPS (regla) – % conectados (0–15 días)**")
-    st.metric("GPS regla 0–15 días", f"{pct_gpsr_0_15:.1f} %", help=f"Base: {gps_regla_total} VIN (regla ≠ Telemetría)")
+    st.metric("GPS (regla) 0–15 días", f"{gpsr_0_15_pct:.2f} %", help="Solo unidades con REGLA≠Telemetría")
+    st.metric("GPS (regla) 16+ días", f"{gpsr_16p_pct:.2f} %")
+    st.metric("GPS (regla) Nunca", f"{gpsr_nunca_pct:.2f} %")
+
 with col3:
-    st.markdown("**GPS global – % conectados (0–15 días)**")
-    st.metric("GPS global 0–15 días", f"{pct_gps_all_0_15:.1f} %", help=f"Base: {gps_all_total} VIN totales")
+    st.metric("GPS Global 0–15 días", f"{gpsa_0_15_pct:.2f} %")
+    st.metric("GPS Global 16+ días", f"{gpsa_16p_pct:.2f} %")
+    st.metric("GPS Global Nunca", f"{gpsa_nunca_pct:.2f} %")
 
+st.markdown("---")
 
-# =========================
-# 2) Barras por rangos 5 segmentos
-# =========================
-st.subheader("2. Distribución por rangos de días sin conexión (5 segmentos)")
-
-colA, colB = st.columns(2)
+# ---------- Distribución por rangos ----------
+st.subheader("Distribución por rangos de días (5 categorías)")
 
 # Telemetría
-with colA:
-    st.markdown("**Telemetría (regla = Telemetría)**")
-    if not df_tlm.empty:
-        counts_tlm = (
-            df_tlm["estado_telemetria"]
-            .value_counts()
-            .reindex(ORDER5)
-            .fillna(0)
-            .astype(int)
-            .reset_index()
-            .rename(columns={"index":"estado","estado_telemetria":"VIN"})
-        )
-        counts_tlm["%"] = safe_pct(counts_tlm["VIN"], counts_tlm["VIN"].sum())
-        st.bar_chart(counts_tlm.set_index("estado")["VIN"])
-        st.dataframe(counts_tlm, use_container_width=True)
-    else:
-        st.info("No hay unidades con regla Telemetría.")
+tele_estado_counts = (
+    tele["estado_telemetria"]
+    .value_counts()
+    .reindex(ORDER5)
+    .fillna(0)
+    .astype(int)
+    .to_frame("VIN_unicos")
+)
+tele_estado_counts["%"] = (tele_estado_counts["VIN_unicos"] /
+                           tele_estado_counts["VIN_unicos"].sum() * 100).round(2)
 
-# GPS (según REGLA)
-with colB:
-    st.markdown("**GPS (según REGLA ≠ Telemetría)**")
-    if not df_gps_regla.empty:
-        counts_gpsr = (
-            df_gps_regla["gps_status_regla"]
-            .value_counts()
-            .reindex(ORDER5)
-            .fillna(0)
-            .astype(int)
-            .reset_index()
-            .rename(columns={"index":"estado","gps_status_regla":"VIN"})
-        )
-        counts_gpsr["%"] = safe_pct(counts_gpsr["VIN"], counts_gpsr["VIN"].sum())
-        st.bar_chart(counts_gpsr.set_index("estado")["VIN"])
-        st.dataframe(counts_gpsr, use_container_width=True)
-    else:
-        st.info("No hay unidades con GPS según REGLA.")
+# GPS según REGLA
+gpsr_estado_counts = (
+    gps_regla["gps_status_regla"]
+    .replace("No aplica", np.nan)
+    .dropna()
+    .value_counts()
+    .reindex(ORDER5)
+    .fillna(0)
+    .astype(int)
+    .to_frame("VIN_unicos")
+)
+if gpsr_estado_counts["VIN_unicos"].sum() > 0:
+    gpsr_estado_counts["%"] = (gpsr_estado_counts["VIN_unicos"] /
+                               gpsr_estado_counts["VIN_unicos"].sum() * 100).round(2)
+else:
+    gpsr_estado_counts["%"] = 0.0
 
-# =========================
-# 3) Top 10 empresas con más problemas
-# =========================
-st.subheader("3. Top 10 empresas con más unidades con problemas")
+col_tlm, col_gps = st.columns(2)
 
-problem_labels = {"Intermitente 3-14", "Limitado 15-30+", "Desconectado 31+", "Nunca"}
+with col_tlm:
+    st.markdown("**Telemetría – Estado (5 rangos)**")
+    st.bar_chart(tele_estado_counts["VIN_unicos"])
+    st.dataframe(tele_estado_counts)
 
-# Telemetría
-tele_problem = df_tlm[df_tlm["estado_telemetria"].isin(problem_labels)]
+with col_gps:
+    st.markdown("**GPS (según REGLA≠Telemetría) – Estado (5 rangos)**")
+    st.bar_chart(gpsr_estado_counts["VIN_unicos"])
+    st.dataframe(gpsr_estado_counts)
+
+st.markdown("---")
+
+# ---------- Top 10 empresas con problemas ----------
+st.subheader("Top 10 Empresas con más problemas de conectividad")
+
+problem_labels = ["Intermitente 3-14", "Limitado 15-30+", "Desconectado 31+", "Nunca"]
+
+# Telemetría problemas
+tele_problem = tele[tele["estado_telemetria"].isin(problem_labels)]
 top10_tele = (
     tele_problem.groupby("Empresa")["VIN"].nunique()
     .sort_values(ascending=False)
     .head(10)
-    .reset_index()
-    .rename(columns={"VIN":"VIN_con_problema"})
+    .to_frame("VIN_con_problema")
 )
+if len(top10_tele):
+    st.markdown("**Top 10 – Telemetría**")
+    st.bar_chart(top10_tele["VIN_con_problema"])
+    st.dataframe(top10_tele)
+else:
+    st.info("No hay datos de telemetría con problemas bajo los filtros actuales.")
 
-# GPS regla
-gpsr_problem = df_gps_regla[df_gps_regla["gps_status_regla"].isin(problem_labels)]
-top10_gpsr = (
+# GPS problemas
+gpsr_problem = gps_regla[gps_regla["gps_status_regla"].isin(problem_labels)]
+top10_gps = (
     gpsr_problem.groupby("Empresa")["VIN"].nunique()
     .sort_values(ascending=False)
     .head(10)
-    .reset_index()
-    .rename(columns={"VIN":"VIN_con_problema"})
+    .to_frame("VIN_con_problema")
 )
 
-colT1, colT2 = st.columns(2)
-with colT1:
-    st.markdown("**Top 10 empresas con problemas en Telemetría**")
-    st.dataframe(top10_tele, use_container_width=True)
-with colT2:
-    st.markdown("**Top 10 empresas con problemas en GPS (según REGLA)**")
-    st.dataframe(top10_gpsr, use_container_width=True)
-
-
-# =========================
-# 4) Histórico de conectividad
-# =========================
-st.subheader("4. Evolución histórica de la conectividad")
-
-if hist is None or hist.empty:
-    st.info("No se encontró `data/historico_conectividad.xlsx` o está vacío.")
+if len(top10_gps):
+    st.markdown("**Top 10 – GPS (según REGLA≠Telemetría)**")
+    st.bar_chart(top10_gps["VIN_con_problema"])
+    st.dataframe(top10_gps)
 else:
-    hist = hist.sort_values("snapshot_date")
-    st.markdown("**Telemetría 0–30 días vs desconectado 31+**")
-    cols_disp = [c for c in hist.columns if c.startswith("tele_")]
-    st.line_chart(
-        hist.set_index("snapshot_date")[["tele_0_30_pct","tele_desconectado_31p_pct"]]
+    st.info("No hay datos de GPS con problemas bajo los filtros actuales.")
+
+st.markdown("---")
+
+# ---------- Histórico (si existe) ----------
+st.subheader("Histórico de conectividad (snapshot diario)")
+
+if hist_df is None or hist_df.empty:
+    st.info("No se encontró `historico_conectividad.xlsx` en la carpeta data/ o está vacío.")
+else:
+    # Ordenar por fecha
+    hist_df = hist_df.sort_values("snapshot_date")
+
+    # Selección de métricas a mostrar
+    metricas_hist = {
+        "Telemetría 0–30 %": "tele_0_30_pct",
+        "Telemetría desconectado 31+ %": "tele_desconectado_31p_pct",
+        "Telemetría nunca %": "tele_nunca_pct",
+        "GPS (regla) 0–15 %": "gps_regla_0_15_pct",
+        "GPS (regla) desconectado 16+ %": "gps_regla_desconectado_16p_pct",
+        "GPS (regla) nunca %": "gps_regla_nunca_pct",
+        "GPS global 0–15 %": "gps_global_0_15_pct",
+        "GPS global desconectado 16+ %": "gps_global_desconectado_16p_pct",
+        "GPS global nunca %": "gps_global_nunca_pct",
+    }
+
+    metricas_sel = st.multiselect(
+        "Métricas históricas a mostrar:",
+        options=list(metricas_hist.keys()),
+        default=["Telemetría 0–30 %", "GPS (regla) 0–15 %"]
     )
 
-    st.markdown("**GPS (regla) 0–15 días vs desconectado**")
-    if {"gps_regla_0_15_pct","gps_regla_desconectado_16p_pct"}.issubset(hist.columns):
-        st.line_chart(
-            hist.set_index("snapshot_date")[["gps_regla_0_15_pct","gps_regla_desconectado_16p_pct"]]
-        )
+    cols_sel = [metricas_hist[k] for k in metricas_sel if metricas_hist[k] in hist_df.columns]
 
-    st.markdown("**GPS global 0–15 días vs desconectado**")
-    if {"gps_global_0_15_pct","gps_global_desconectado_16p_pct"}.issubset(hist.columns):
-        st.line_chart(
-            hist.set_index("snapshot_date")[["gps_global_0_15_pct","gps_global_desconectado_16p_pct"]]
-        )
+    if cols_sel:
+        hist_plot = hist_df.set_index("snapshot_date")[cols_sel]
+        st.line_chart(hist_plot)
+        st.dataframe(hist_plot.tail(10))
+    else:
+        st.info("Selecciona al menos una métrica para graficar.")
 
-    st.markdown("**Tabla histórico de KPIs**")
-    st.dataframe(hist, use_container_width=True)
-
-# =========================
-# 5) Tabla raw opcional
-# =========================
-if show_raw:
-    st.subheader("5. Tabla raw – foto actual (1 fila por VIN)")
-    st.dataframe(df_current, use_container_width=True)
+st.markdown("---")
+st.caption("Dashboard local – basado en master_status_inner_qs_ready.csv e historico_conectividad.xlsx")
