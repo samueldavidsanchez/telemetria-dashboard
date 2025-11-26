@@ -54,56 +54,66 @@ def safe_pct(num, den):
 # =========================
 # CARGA DE DATOS
 # =========================
+
 @st.cache_data
 def load_status_df():
-    df = pd.read_csv(PATH_STATUS)
+    # Ajusta la ruta si es distinta
+    path = "data/master_status_inner_qs_ready.csv"
+    df = pd.read_csv(path)
 
-    # Normaliza nombres clave si falta algo
-    if "REGLA GENERAL DE REPORTABILIDAD" not in df.columns:
-        st.warning("No encuentro la columna 'REGLA GENERAL DE REPORTABILIDAD' en el CSV.")
-        df["REGLA GENERAL DE REPORTABILIDAD"] = ""
-
-    # Normaliza regla
-    df["regla_norm"] = df["REGLA GENERAL DE REPORTABILIDAD"].map(no_accents_upper)
-
-    # Fechas
-    for c in ["gps_timestamp", "can_timestamp"]:
+    # --- Normalizar timestamps ---
+    for c in ["gps_timestamp", "can_timestamp", "last_update_utc"]:
         if c in df.columns:
-            df[c] = pd.to_datetime(df[c], errors="coerce")
+            df[c] = pd.to_datetime(df[c], errors="coerce", utc=True)  # siempre UTC
 
-    # Día de hoy (naive)
-    today = pd.Timestamp.utcnow().normalize()
+    # ---- Definir "hoy" también en UTC y luego quitar tz para que todo sea naive ----
+    today_utc = pd.Timestamp.utcnow().normalize().tz_localize("UTC")
+    # hacemos las fechas de los timestamps también UTC pero luego las pasamos a naive
 
-    # Días desde última conexión
+    # GPS
     if "gps_timestamp" in df.columns:
-        gps_date = pd.to_datetime(df["gps_timestamp"].dt.date, errors="coerce")
-        df["days_gps"] = (today - gps_date).dt.days
-        df["days_gps"] = df["days_gps"].fillna(9999).astype(int)
+        gps_local = df["gps_timestamp"].dt.tz_convert("UTC")  # ya es UTC, pero por si acaso
+        gps_date = gps_local.dt.tz_localize(None).dt.normalize()  # quitar tz, dejar YYYY-MM-DD 00:00
     else:
-        df["days_gps"] = 9999
+        gps_date = pd.NaT
+
+    # CAN
+    if "can_timestamp" in df.columns:
+        can_local = df["can_timestamp"].dt.tz_convert("UTC")
+        can_date = can_local.dt.tz_localize(None).dt.normalize()
+    else:
+        can_date = pd.NaT
+
+    # Y dejamos today también naive para que no choque
+    today_naive = today_utc.tz_localize(None)  # quitar tz
+
+    # --- Calcular días SIN mezclar aware/naive ---
+    if "gps_timestamp" in df.columns:
+        df["days_gps"] = (today_naive - gps_date).dt.days
+    else:
+        df["days_gps"] = np.nan
 
     if "can_timestamp" in df.columns:
-        can_date = pd.to_datetime(df["can_timestamp"].dt.date, errors="coerce")
-        df["days_can"] = (today - can_date).dt.days
-        df["days_can"] = df["days_can"].fillna(9999).astype(int)
+        df["days_can"] = (today_naive - can_date).dt.days
     else:
-        df["days_can"] = 9999
+        df["days_can"] = np.nan
 
-    # Estados 5 rangos
-    df["estado_telemetria"] = clasificar_5rangos(df.get("can_timestamp", pd.NaT), df["days_can"])
-    df["gps_status_any"]    = clasificar_5rangos(df.get("gps_timestamp", pd.NaT), df["days_gps"])
+    # Asegurar tipo Int64 con NA
+    df["days_gps"] = pd.to_numeric(df["days_gps"], errors="coerce").astype("Int64")
+    df["days_can"] = pd.to_numeric(df["days_can"], errors="coerce").astype("Int64")
 
-    # GPS según regla (≠ Telemetría)
-    mask_gps_regla = df["regla_norm"] != "TELEMETRIA"
-    gps_regla = pd.Categorical(["No aplica"] * len(df),
-                               categories=ORDER5 + ["No aplica"],
-                               ordered=True)
-    gps_regla = pd.Series(list(gps_regla), index=df.index, dtype="object")
-    tmp = clasificar_5rangos(df.get("gps_timestamp", pd.NaT), df["days_gps"]).astype(object)
-    gps_regla[mask_gps_regla] = tmp[mask_gps_regla]
-    df["gps_status_regla"] = pd.Categorical(gps_regla,
-                                            categories=ORDER5 + ["No aplica"],
-                                            ordered=True)
+    # --- Normalizar regla de reportabilidad (si la usas en filtros/KPIs) ---
+    def no_accents_upper(s):
+        if pd.isna(s): 
+            return ""
+        s = unicodedata.normalize("NFKD", str(s))
+        s = "".join(ch for ch in s if not unicodedata.combining(ch))
+        return s.strip().upper()
+
+    if "REGLA GENERAL DE REPORTABILIDAD" in df.columns:
+        df["regla_norm"] = df["REGLA GENERAL DE REPORTABILIDAD"].map(no_accents_upper)
+    else:
+        df["regla_norm"] = ""
 
     return df
 
