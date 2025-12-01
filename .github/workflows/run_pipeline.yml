@@ -29,7 +29,6 @@ jobs:
           # Streamlit y sus dependencias se instalarán en Streamlit Cloud
           pip install pandas numpy requests python-dotenv openpyxl boto3 pytz
 
-      ---
 
       - name: 📈 Run pipeline.py (Generar y actualizar data)
         env:
@@ -39,7 +38,6 @@ jobs:
           # El script pipeline.py genera los archivos de datos actualizados
           python pipeline.py
           
-      ---
           
       - name: 💾 Commit & Push results
         uses: stefanzweifel/git-auto-commit-action@v5
