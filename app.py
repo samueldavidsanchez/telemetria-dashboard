@@ -56,7 +56,134 @@ def safe_pct(num, den):
 # =========================
 
 @st.cache_data
+@st.cache_data
+@st.cache_data
 def load_status_df():
+    # Carga base
+    path = "data/master_status_inner_qs_ready.csv"
+    df = pd.read_csv(path)
+
+    # --- Normalizar timestamps a datetime con tz UTC ---
+    for c in ["gps_timestamp", "can_timestamp", "last_update_utc"]:
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], errors="coerce", utc=True)
+
+    # --- Calcular días desde última conexión (todo como fechas naïve) ---
+    # Hoy en UTC sin hora (naive)
+    today = pd.Timestamp.utcnow().normalize()
+
+    # GPS
+    if "gps_timestamp" in df.columns:
+        gps_date = pd.to_datetime(df["gps_timestamp"].dt.date, errors="coerce")
+        df["days_gps"] = (today - gps_date).dt.days
+    else:
+        df["days_gps"] = np.nan
+
+    # CAN
+    if "can_timestamp" in df.columns:
+        can_date = pd.to_datetime(df["can_timestamp"].dt.date, errors="coerce")
+        df["days_can"] = (today - can_date).dt.days
+    else:
+        df["days_can"] = np.nan
+
+    # Asegurar tipo Int64 con NA
+    df["days_gps"] = pd.to_numeric(df["days_gps"], errors="coerce").astype("Int64")
+    df["days_can"] = pd.to_numeric(df["days_can"], errors="coerce").astype("Int64")
+
+    # --- Normalizar regla de reportabilidad ---
+    if "REGLA GENERAL DE REPORTABILIDAD" in df.columns:
+        df["regla_norm"] = df["REGLA GENERAL DE REPORTABILIDAD"].map(no_accents_upper)
+    else:
+        df["regla_norm"] = ""
+
+    # =====================================================
+    # CREAR COLUMNAS DE ESTADO (las que usa el dashboard)
+    # =====================================================
+
+    # Máscaras por regla
+    mask_tlm       = df["regla_norm"] == "TELEMETRIA"
+    mask_gps_regla = ~mask_tlm
+
+    # ---- Telemetría (estado_telemetria) solo para regla = TELEMETRIA ----
+    df["estado_telemetria"] = pd.Categorical(
+        ["No aplica"] * len(df),
+        categories=ORDER5 + ["No aplica"],
+        ordered=True,
+    )
+
+    if "can_timestamp" in df.columns:
+        can_cat = clasificar_5rangos(df["can_timestamp"], df["days_can"])
+        # Solo rellenamos para las filas con regla de Telemetría
+        df.loc[mask_tlm, "estado_telemetria"] = can_cat[mask_tlm].astype(object)
+
+    # ---- GPS según REGLA (gps_status_regla) -> solo cuando regla ≠ Telemetría ----
+    df["gps_status_regla"] = pd.Categorical(
+        ["No aplica"] * len(df),
+        categories=ORDER5 + ["No aplica"],
+        ordered=True,
+    )
+
+    if "gps_timestamp" in df.columns:
+        gps_cat = clasificar_5rangos(df["gps_timestamp"], df["days_gps"])
+        df.loc[mask_gps_regla, "gps_status_regla"] = gps_cat[mask_gps_regla].astype(object)
+
+        # ---- GPS ANY (todas las filas con gps_timestamp) ----
+        # Aquí no importa la regla; es el estado global de GPS
+        df["gps_status_any"] = gps_cat
+    else:
+        df["gps_status_any"] = pd.Categorical(
+            ["Nunca"] * len(df),
+            categories=ORDER5,
+            ordered=True,
+        )
+
+    return df
+
+    # Usa la ruta ya configurada arriba
+    path = PATH_STATUS
+    df = pd.read_csv(path)
+
+    # --- Normalizar timestamps como datetime SIN TZ (naive) ---
+    for c in ["gps_timestamp", "can_timestamp", "last_update_utc"]:
+        if c in df.columns:
+            # Sin utc=True => quedan naive, que es justo lo que queremos
+            df[c] = pd.to_datetime(df[c], errors="coerce")
+
+    # ---- "Hoy" como fecha naive (sin tz) ----
+    today_naive = pd.Timestamp.today().normalize()  # ej: 2025-11-26 00:00:00
+
+    # --- Calcular días desde última conexión (GPS / CAN) ---
+    if "gps_timestamp" in df.columns:
+        gps_date = pd.to_datetime(df["gps_timestamp"].dt.date, errors="coerce")
+        df["days_gps"] = (today_naive - gps_date).dt.days
+    else:
+        df["days_gps"] = np.nan
+
+    if "can_timestamp" in df.columns:
+        can_date = pd.to_datetime(df["can_timestamp"].dt.date, errors="coerce")
+        df["days_can"] = (today_naive - can_date).dt.days
+    else:
+        df["days_can"] = np.nan
+
+    # Asegurar tipo Int64 con NA
+    df["days_gps"] = pd.to_numeric(df["days_gps"], errors="coerce").astype("Int64")
+    df["days_can"] = pd.to_numeric(df["days_can"], errors="coerce").astype("Int64")
+
+    # --- Normalizar regla de reportabilidad ---
+    def _no_accents_upper(s):
+        if pd.isna(s):
+            return ""
+        s = unicodedata.normalize("NFKD", str(s))
+        s = "".join(ch for ch in s if not unicodedata.combining(ch))
+        return s.strip().upper()
+
+    if "REGLA GENERAL DE REPORTABILIDAD" in df.columns:
+        df["regla_norm"] = df["REGLA GENERAL DE REPORTABILIDAD"].map(_no_accents_upper)
+    else:
+        df["regla_norm"] = ""
+
+    return df
+
     # Ajusta la ruta si es distinta
     path = "data/master_status_inner_qs_ready.csv"
     df = pd.read_csv(path)
