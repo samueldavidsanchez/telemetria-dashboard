@@ -42,7 +42,7 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           # Especifica los archivos que Streamlit Cloud necesita leer
-          file_pattern: outQS/master_status_inner_qs_ready.csv outQS/historico_conectividad.xlsx
+          file_pattern: data/master_status_inner_qs_ready.csv data/historico_conectividad.xlsx
           commit_message: "Auto-update Data Telemetría - Ejecución Diaria $(date)"
           token: ${{ secrets.GITHUB_TOKEN }}
 
