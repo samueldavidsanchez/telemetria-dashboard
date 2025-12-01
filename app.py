@@ -56,6 +56,66 @@ def safe_pct(num, den):
 
 @st.cache_data
 def load_status_df():
+    # Usamos la ruta relativa dentro del repo
+    path = DATA_DIR / "master_status_inner_qs_ready.csv"
+    df = pd.read_csv(path)
+
+    # --- Normalizar timestamps: parsear como UTC y luego quitar tz (dejarlos naive) ---
+    for c in ["gps_timestamp", "can_timestamp", "last_update_utc"]:
+        if c in df.columns:
+            ts = pd.to_datetime(df[c], errors="coerce", utc=True)
+            # Quitamos la zona horaria para trabajar todo en naive
+            df[c] = ts.dt.tz_localize(None)
+
+    # "Hoy" como fecha naive (sin tz)
+    today = pd.Timestamp.now().normalize()
+
+    # --- Calcular días desde última conexión ---
+    if "gps_timestamp" in df.columns:
+        gps_date = df["gps_timestamp"].dt.normalize()
+        df["days_gps"] = (today - gps_date).dt.days
+    else:
+        df["days_gps"] = np.nan
+
+    if "can_timestamp" in df.columns:
+        can_date = df["can_timestamp"].dt.normalize()
+        df["days_can"] = (today - can_date).dt.days
+    else:
+        df["days_can"] = np.nan
+
+    # Asegurar tipo Int64 con NA
+    df["days_gps"] = pd.to_numeric(df["days_gps"], errors="coerce").astype("Int64")
+    df["days_can"] = pd.to_numeric(df["days_can"], errors="coerce").astype("Int64")
+
+    # --- Normalizar regla de reportabilidad ---
+    if "REGLA GENERAL DE REPORTABILIDAD" in df.columns:
+        df["regla_norm"] = df["REGLA GENERAL DE REPORTABILIDAD"].map(no_accents_upper)
+    else:
+        df["regla_norm"] = ""
+
+    # Si no existen las columnas de estado, las calculamos aquí (por si no lo hacías antes)
+    # Telemetría (solo regla = TELEMETRIA)
+    mask_tlm = df["regla_norm"] == "TELEMETRIA"
+    df["estado_telemetria"] = pd.Categorical(["Nunca"] * len(df), categories=ORDER5, ordered=True)
+    if "can_timestamp" in df.columns:
+        df.loc[mask_tlm, "estado_telemetria"] = clasificar_5rangos(
+            df.loc[mask_tlm, "can_timestamp"],
+            df.loc[mask_tlm, "days_can"]
+        )
+
+    # GPS según REGLA (regla != TELEMETRIA)
+    mask_gps_regla = df["regla_norm"] != "TELEMETRIA"
+    df["gps_status_regla"] = pd.Categorical(["No aplica"] * len(df),
+                                            categories=ORDER5 + ["No aplica"],
+                                            ordered=True)
+    if "gps_timestamp" in df.columns:
+        gps_cat = clasificar_5rangos(df["gps_timestamp"], df["days_gps"]).astype(object)
+        tmp = pd.Series(["No aplica"] * len(df), index=df.index, dtype="object")
+        tmp[mask_gps_regla] = gps_cat[mask_gps_regla]
+        df["gps_status_regla"] = pd.Categorical(tmp, categories=ORDER5 + ["No aplica"], ordered=True)
+
+    return df
+
     # Lee el CSV de estado actual
     df = pd.read_csv(PATH_STATUS)
 
