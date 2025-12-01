@@ -184,7 +184,7 @@ def load_historico_df():
     try:
         hist = pd.read_excel(PATH_HIST, sheet_name="historico")
     except FileNotFoundError:
-        return None
+        return None, None #
 
     # Asegurar fecha en datetime
     if "fecha" in hist.columns:
@@ -202,7 +202,13 @@ def load_historico_df():
         + hist["pct_Limitado 15-30+"].fillna(0)
     )
 
-    return hist
+    if not hist.empty and "fecha" in hist.columns:
+        # Encuentra la fecha más reciente en el histórico
+        ultima_fecha_data = hist["fecha"].max()
+    else:
+        ultima_fecha_data = None
+
+    return hist, ultima_fecha_data #
 
 
     """
@@ -241,7 +247,7 @@ def load_historico_df():
     return hist
 
 df_status = load_status_df()
-hist_df   = load_historico_df()
+hist_df, ultima_fecha = load_historico_df()
 
 # =========================
 # SIDEBAR FILTROS
@@ -317,6 +323,13 @@ gpsa_nunca_pct = safe_pct(gpsa_nunca, gpsa_total)
 # LAYOUT PRINCIPAL
 # =========================
 st.title("Dashboard de Conectividad Telemetría & GPS")
+
+if ultima_fecha is not None:
+    # Formatear la fecha para que sea legible
+    fecha_formateada = ultima_fecha.strftime("%d-%m-%Y")
+    st.markdown(f"**Fecha de la Data (Última Actualización):** **`{fecha_formateada}`**")
+else:
+    st.info("No se pudo determinar la fecha de la última actualización.")
 
 st.markdown(
     f"**Unidades en muestra (filtradas):** {len(df_f):,}  "
