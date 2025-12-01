@@ -30,7 +30,7 @@ jobs:
           pip install pandas numpy requests python-dotenv openpyxl boto3 pytz
 
 
-      - name: 📈 Run pipeline.py (Generar y actualizar data)
+      - name: Run pipeline.py (Generar y actualizar data)
         env:
           COPILOTO_EMAIL: ${{ secrets.COPILOTO_EMAIL }}
           COPILOTO_PASSWORD: ${{ secrets.COPILOTO_PASSWORD }}
@@ -39,7 +39,7 @@ jobs:
           python pipeline.py
           
           
-      - name: 💾 Commit & Push results
+      - name: Commit & Push results
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           # Especifica los archivos que Streamlit Cloud necesita leer
@@ -47,7 +47,7 @@ jobs:
           commit_message: "Auto-update Data Telemetría - Ejecución Diaria $(date)"
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: ✅ Confirmación
+      - name: Confirmación
         run: |
           echo "Pipeline ejecutado. Los archivos fueron subidos a GitHub."
           echo "Streamlit Cloud detectará estos cambios y redeployará el dashboard."
