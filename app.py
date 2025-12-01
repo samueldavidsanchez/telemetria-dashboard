@@ -58,7 +58,65 @@ def safe_pct(num, den):
 @st.cache_data
 @st.cache_data
 @st.cache_data
+@st.cache_data
 def load_status_df():
+    path = "data/master_status_inner_qs_ready.csv"
+    df = pd.read_csv(path)
+
+    # --- Convertir timestamps a UTC aware ---
+    for c in ["gps_timestamp", "can_timestamp", "last_update_utc"]:
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], errors="coerce", utc=True)
+
+    # --- Convertir todos los timestamps a NAIVE (sin tz) ---
+    for c in ["gps_timestamp", "can_timestamp", "last_update_utc"]:
+        if c in df.columns:
+            df[c] = df[c].dt.tz_convert("UTC").dt.tz_localize(None)
+
+    # --- Definir hoy también en NAIVE ---
+    today = pd.Timestamp.utcnow().normalize()   # NO tz-aware
+
+    # --- Calcular días GPS y CAN ---
+    if "gps_timestamp" in df.columns:
+        df["days_gps"] = (today - df["gps_timestamp"]).dt.days
+    else:
+        df["days_gps"] = np.nan
+
+    if "can_timestamp" in df.columns:
+        df["days_can"] = (today - df["can_timestamp"]).dt.days
+    else:
+        df["days_can"] = np.nan
+
+    df["days_gps"] = pd.to_numeric(df["days_gps"], errors="coerce").astype("Int64")
+    df["days_can"] = pd.to_numeric(df["days_can"], errors="coerce").astype("Int64")
+
+    # --- Normalizar regla ---
+    if "REGLA GENERAL DE REPORTABILIDAD" in df.columns:
+        df["regla_norm"] = df["REGLA GENERAL DE REPORTABILIDAD"].map(no_accents_upper)
+    else:
+        df["regla_norm"] = ""
+
+    # --- CREAR CATEGORÍAS (esto evita los KeyError) ---
+    df["estado_telemetria"] = clasificar_5rangos(
+        df["can_timestamp"], df["days_can"]
+    )
+
+    df["gps_status_any"] = clasificar_5rangos(
+        df["gps_timestamp"], df["days_gps"]
+    )
+
+    # GPS según regla (solo cuando regla != TELEMETRIA)
+    mask_regla_gps = df["regla_norm"] != "TELEMETRIA"
+    gps_regla = pd.Categorical(["No aplica"] * len(df),
+        categories=ORDER5 + ["No aplica"], ordered=True)
+    gps_regla = pd.Series(list(gps_regla), index=df.index, dtype="object")
+
+    tmp = clasificar_5rangos(df["gps_timestamp"], df["days_gps"]).astype(object)
+    gps_regla[mask_regla_gps] = tmp[mask_regla_gps]
+    df["gps_status_regla"] = gps_regla
+
+    return df
+
     # Carga base
     path = "data/master_status_inner_qs_ready.csv"
     df = pd.read_csv(path)
