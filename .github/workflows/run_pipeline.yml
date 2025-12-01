@@ -27,8 +27,7 @@ jobs:
           pip install --upgrade pip
           # Solo instala las dependencias necesarias para pipeline.py (pandas, requests, boto3, etc.)
           # Streamlit y sus dependencias se instalarán en Streamlit Cloud
-          pip install pandas numpy requests python-dotenv openpyxl boto3 pytz
-
+          pip install pandas numpy requests python-dotenv openpyxl boto3 pytz xlsxwriter
 
       - name: Run pipeline.py (Generar y actualizar data)
         env:
