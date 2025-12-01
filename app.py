@@ -1,9 +1,8 @@
-import streamlit as st # pyright: ignore[reportMissingImports]
+import streamlit as st  # pyright: ignore[reportMissingImports]
 import pandas as pd
 import numpy as np
 import unicodedata
 from pathlib import Path
-from datetime import datetime
 
 # =========================
 # CONFIGURACIÓN BÁSICA
@@ -56,88 +55,24 @@ def safe_pct(num, den):
 # =========================
 
 @st.cache_data
-@st.cache_data
-@st.cache_data
-@st.cache_data
 def load_status_df():
-    path = "data/master_status_inner_qs_ready.csv"
-    df = pd.read_csv(path)
+    # Lee el CSV de estado actual
+    df = pd.read_csv(PATH_STATUS)
 
-    # --- Convertir timestamps a UTC aware ---
+    # --- Normalizar timestamps como NAIVE (sin tz) ---
     for c in ["gps_timestamp", "can_timestamp", "last_update_utc"]:
         if c in df.columns:
-            df[c] = pd.to_datetime(df[c], errors="coerce", utc=True)
+            df[c] = pd.to_datetime(df[c], errors="coerce")  # sin utc=True
 
-    # --- Convertir todos los timestamps a NAIVE (sin tz) ---
-    for c in ["gps_timestamp", "can_timestamp", "last_update_utc"]:
-        if c in df.columns:
-            df[c] = df[c].dt.tz_convert("UTC").dt.tz_localize(None)
+    # ---- Calcular días desde hoy (todo naive) ----
+    today = pd.Timestamp.today().normalize()  # naive, sin tz
 
-    # --- Definir hoy también en NAIVE ---
-    today = pd.Timestamp.utcnow().normalize()   # NO tz-aware
-
-    # --- Calcular días GPS y CAN ---
-    if "gps_timestamp" in df.columns:
-        df["days_gps"] = (today - df["gps_timestamp"]).dt.days
-    else:
-        df["days_gps"] = np.nan
-
-    if "can_timestamp" in df.columns:
-        df["days_can"] = (today - df["can_timestamp"]).dt.days
-    else:
-        df["days_can"] = np.nan
-
-    df["days_gps"] = pd.to_numeric(df["days_gps"], errors="coerce").astype("Int64")
-    df["days_can"] = pd.to_numeric(df["days_can"], errors="coerce").astype("Int64")
-
-    # --- Normalizar regla ---
-    if "REGLA GENERAL DE REPORTABILIDAD" in df.columns:
-        df["regla_norm"] = df["REGLA GENERAL DE REPORTABILIDAD"].map(no_accents_upper)
-    else:
-        df["regla_norm"] = ""
-
-    # --- CREAR CATEGORÍAS (esto evita los KeyError) ---
-    df["estado_telemetria"] = clasificar_5rangos(
-        df["can_timestamp"], df["days_can"]
-    )
-
-    df["gps_status_any"] = clasificar_5rangos(
-        df["gps_timestamp"], df["days_gps"]
-    )
-
-    # GPS según regla (solo cuando regla != TELEMETRIA)
-    mask_regla_gps = df["regla_norm"] != "TELEMETRIA"
-    gps_regla = pd.Categorical(["No aplica"] * len(df),
-        categories=ORDER5 + ["No aplica"], ordered=True)
-    gps_regla = pd.Series(list(gps_regla), index=df.index, dtype="object")
-
-    tmp = clasificar_5rangos(df["gps_timestamp"], df["days_gps"]).astype(object)
-    gps_regla[mask_regla_gps] = tmp[mask_regla_gps]
-    df["gps_status_regla"] = gps_regla
-
-    return df
-
-    # Carga base
-    path = "data/master_status_inner_qs_ready.csv"
-    df = pd.read_csv(path)
-
-    # --- Normalizar timestamps a datetime con tz UTC ---
-    for c in ["gps_timestamp", "can_timestamp", "last_update_utc"]:
-        if c in df.columns:
-            df[c] = pd.to_datetime(df[c], errors="coerce", utc=True)
-
-    # --- Calcular días desde última conexión (todo como fechas naïve) ---
-    # Hoy en UTC sin hora (naive)
-    today = pd.Timestamp.utcnow().normalize()
-
-    # GPS
     if "gps_timestamp" in df.columns:
         gps_date = pd.to_datetime(df["gps_timestamp"].dt.date, errors="coerce")
         df["days_gps"] = (today - gps_date).dt.days
     else:
         df["days_gps"] = np.nan
 
-    # CAN
     if "can_timestamp" in df.columns:
         can_date = pd.to_datetime(df["can_timestamp"].dt.date, errors="coerce")
         df["days_can"] = (today - can_date).dt.days
@@ -154,162 +89,95 @@ def load_status_df():
     else:
         df["regla_norm"] = ""
 
-    # =====================================================
-    # CREAR COLUMNAS DE ESTADO (las que usa el dashboard)
-    # =====================================================
-
-    # Máscaras por regla
-    mask_tlm       = df["regla_norm"] == "TELEMETRIA"
-    mask_gps_regla = ~mask_tlm
-
-    # ---- Telemetría (estado_telemetria) solo para regla = TELEMETRIA ----
-    df["estado_telemetria"] = pd.Categorical(
-        ["No aplica"] * len(df),
-        categories=ORDER5 + ["No aplica"],
-        ordered=True,
+    # --- Estados 5 rangos para Telemetría y GPS ---
+    # Telemetría sólo para regla = TELEMETRIA
+    df["estado_telemetria"] = clasificar_5rangos(
+        df["can_timestamp"] if "can_timestamp" in df.columns else pd.Series(pd.NaT, index=df.index),
+        df["days_can"]
     )
 
-    if "can_timestamp" in df.columns:
-        can_cat = clasificar_5rangos(df["can_timestamp"], df["days_can"])
-        # Solo rellenamos para las filas con regla de Telemetría
-        df.loc[mask_tlm, "estado_telemetria"] = can_cat[mask_tlm].astype(object)
-
-    # ---- GPS según REGLA (gps_status_regla) -> solo cuando regla ≠ Telemetría ----
-    df["gps_status_regla"] = pd.Categorical(
-        ["No aplica"] * len(df),
-        categories=ORDER5 + ["No aplica"],
-        ordered=True,
+    # GPS (ANY) para todas las filas con gps_timestamp
+    df["gps_status_any"] = clasificar_5rangos(
+        df["gps_timestamp"] if "gps_timestamp" in df.columns else pd.Series(pd.NaT, index=df.index),
+        df["days_gps"]
     )
 
-    if "gps_timestamp" in df.columns:
-        gps_cat = clasificar_5rangos(df["gps_timestamp"], df["days_gps"])
-        df.loc[mask_gps_regla, "gps_status_regla"] = gps_cat[mask_gps_regla].astype(object)
+    # GPS (REGRA): sólo cuando regla_norm != TELEMETRIA, resto "No aplica"
+    gps_regla_raw = clasificar_5rangos(
+        df["gps_timestamp"] if "gps_timestamp" in df.columns else pd.Series(pd.NaT, index=df.index),
+        df["days_gps"]
+    ).astype(object)
 
-        # ---- GPS ANY (todas las filas con gps_timestamp) ----
-        # Aquí no importa la regla; es el estado global de GPS
-        df["gps_status_any"] = gps_cat
-    else:
-        df["gps_status_any"] = pd.Categorical(
-            ["Nunca"] * len(df),
-            categories=ORDER5,
-            ordered=True,
-        )
-
-    return df
-
-    # Usa la ruta ya configurada arriba
-    path = PATH_STATUS
-    df = pd.read_csv(path)
-
-    # --- Normalizar timestamps como datetime SIN TZ (naive) ---
-    for c in ["gps_timestamp", "can_timestamp", "last_update_utc"]:
-        if c in df.columns:
-            # Sin utc=True => quedan naive, que es justo lo que queremos
-            df[c] = pd.to_datetime(df[c], errors="coerce")
-
-    # ---- "Hoy" como fecha naive (sin tz) ----
-    today_naive = pd.Timestamp.today().normalize()  # ej: 2025-11-26 00:00:00
-
-    # --- Calcular días desde última conexión (GPS / CAN) ---
-    if "gps_timestamp" in df.columns:
-        gps_date = pd.to_datetime(df["gps_timestamp"].dt.date, errors="coerce")
-        df["days_gps"] = (today_naive - gps_date).dt.days
-    else:
-        df["days_gps"] = np.nan
-
-    if "can_timestamp" in df.columns:
-        can_date = pd.to_datetime(df["can_timestamp"].dt.date, errors="coerce")
-        df["days_can"] = (today_naive - can_date).dt.days
-    else:
-        df["days_can"] = np.nan
-
-    # Asegurar tipo Int64 con NA
-    df["days_gps"] = pd.to_numeric(df["days_gps"], errors="coerce").astype("Int64")
-    df["days_can"] = pd.to_numeric(df["days_can"], errors="coerce").astype("Int64")
-
-    # --- Normalizar regla de reportabilidad ---
-    def _no_accents_upper(s):
-        if pd.isna(s):
-            return ""
-        s = unicodedata.normalize("NFKD", str(s))
-        s = "".join(ch for ch in s if not unicodedata.combining(ch))
-        return s.strip().upper()
-
-    if "REGLA GENERAL DE REPORTABILIDAD" in df.columns:
-        df["regla_norm"] = df["REGLA GENERAL DE REPORTABILIDAD"].map(_no_accents_upper)
-    else:
-        df["regla_norm"] = ""
-
-    return df
-
-    # Ajusta la ruta si es distinta
-    path = "data/master_status_inner_qs_ready.csv"
-    df = pd.read_csv(path)
-
-    # --- Normalizar timestamps ---
-    for c in ["gps_timestamp", "can_timestamp", "last_update_utc"]:
-        if c in df.columns:
-            df[c] = pd.to_datetime(df[c], errors="coerce", utc=True)  # siempre UTC
-
-    # ---- Definir "hoy" también en UTC y luego quitar tz para que todo sea naive ----
-    today_utc = pd.Timestamp.utcnow().normalize().tz_localize("UTC")
-    # hacemos las fechas de los timestamps también UTC pero luego las pasamos a naive
-
-    # GPS
-    if "gps_timestamp" in df.columns:
-        gps_local = df["gps_timestamp"].dt.tz_convert("UTC")  # ya es UTC, pero por si acaso
-        gps_date = gps_local.dt.tz_localize(None).dt.normalize()  # quitar tz, dejar YYYY-MM-DD 00:00
-    else:
-        gps_date = pd.NaT
-
-    # CAN
-    if "can_timestamp" in df.columns:
-        can_local = df["can_timestamp"].dt.tz_convert("UTC")
-        can_date = can_local.dt.tz_localize(None).dt.normalize()
-    else:
-        can_date = pd.NaT
-
-    # Y dejamos today también naive para que no choque
-    today_naive = today_utc.tz_localize(None)  # quitar tz
-
-    # --- Calcular días SIN mezclar aware/naive ---
-    if "gps_timestamp" in df.columns:
-        df["days_gps"] = (today_naive - gps_date).dt.days
-    else:
-        df["days_gps"] = np.nan
-
-    if "can_timestamp" in df.columns:
-        df["days_can"] = (today_naive - can_date).dt.days
-    else:
-        df["days_can"] = np.nan
-
-    # Asegurar tipo Int64 con NA
-    df["days_gps"] = pd.to_numeric(df["days_gps"], errors="coerce").astype("Int64")
-    df["days_can"] = pd.to_numeric(df["days_can"], errors="coerce").astype("Int64")
-
-    # --- Normalizar regla de reportabilidad (si la usas en filtros/KPIs) ---
-    def no_accents_upper(s):
-        if pd.isna(s): 
-            return ""
-        s = unicodedata.normalize("NFKD", str(s))
-        s = "".join(ch for ch in s if not unicodedata.combining(ch))
-        return s.strip().upper()
-
-    if "REGLA GENERAL DE REPORTABILIDAD" in df.columns:
-        df["regla_norm"] = df["REGLA GENERAL DE REPORTABILIDAD"].map(no_accents_upper)
-    else:
-        df["regla_norm"] = ""
+    gps_regla = pd.Series("No aplica", index=df.index, dtype="object")
+    mask_gps_regla = df["regla_norm"] != "TELEMETRIA"
+    gps_regla[mask_gps_regla] = gps_regla_raw[mask_gps_regla]
+    df["gps_status_regla"] = pd.Categorical(gps_regla, categories=ORDER5 + ["No aplica"], ordered=True)
 
     return df
 
 @st.cache_data
 def load_historico_df():
+    """
+    Lee historico_conectividad.xlsx, hoja 'historico',
+    y calcula pct_0_30 = Conectado 0-2 + Intermitente 3-14 + Limitado 15-30+
+    """
     try:
-        hist = pd.read_excel(PATH_HIST)
+        hist = pd.read_excel(PATH_HIST, sheet_name="historico")
     except FileNotFoundError:
         return None
-    if "snapshot_date" in hist.columns:
-        hist["snapshot_date"] = pd.to_datetime(hist["snapshot_date"], errors="coerce")
+
+    # Asegurar fecha en datetime
+    if "fecha" in hist.columns:
+        hist["fecha"] = pd.to_datetime(hist["fecha"], errors="coerce")
+
+    # Asegurar columnas necesarias (si alguna faltara, la ponemos en 0)
+    for c in ["pct_Conectado 0-2", "pct_Intermitente 3-14", "pct_Limitado 15-30+"]:
+        if c not in hist.columns:
+            hist[c] = 0.0
+
+    # % conectado 0–30 días
+    hist["pct_0_30"] = (
+        hist["pct_Conectado 0-2"].fillna(0)
+        + hist["pct_Intermitente 3-14"].fillna(0)
+        + hist["pct_Limitado 15-30+"].fillna(0)
+    )
+
+    return hist
+
+
+    """
+    Carga historico_conectividad.xlsx, hoja 'historico'.
+    Si no existe esa hoja, usa la primera disponible.
+    Normaliza la columna de fecha a 'snapshot_date'.
+    """
+    try:
+        xls = pd.ExcelFile(PATH_HIST)
+    except FileNotFoundError:
+        return None
+
+    sheet_name = "historico"
+    if sheet_name not in xls.sheet_names:
+        # Usa la primera hoja si no existe 'historico'
+        sheet_name = xls.sheet_names[0]
+
+    hist = xls.parse(sheet_name)
+
+    # Intentar detectar la columna de fecha
+    date_col = None
+    for candidate in ["snapshot_date", "fecha", "date", "Fecha"]:
+        if candidate in hist.columns:
+            date_col = candidate
+            break
+
+    if date_col is None:
+        # No hay columna clara de fecha, devolvemos tal cual
+        return hist
+
+    # Renombrar a snapshot_date si hace falta
+    if date_col != "snapshot_date":
+        hist = hist.rename(columns={date_col: "snapshot_date"})
+
+    hist["snapshot_date"] = pd.to_datetime(hist["snapshot_date"], errors="coerce")
     return hist
 
 df_status = load_status_df()
@@ -421,16 +289,24 @@ st.markdown("---")
 st.subheader("Distribución por rangos de días (5 categorías)")
 
 # Telemetría
-tele_estado_counts = (
-    tele["estado_telemetria"]
-    .value_counts()
-    .reindex(ORDER5)
-    .fillna(0)
-    .astype(int)
-    .to_frame("VIN_unicos")
-)
-tele_estado_counts["%"] = (tele_estado_counts["VIN_unicos"] /
-                           tele_estado_counts["VIN_unicos"].sum() * 100).round(2)
+if len(tele):
+    tele_estado_counts = (
+        tele["estado_telemetria"]
+        .value_counts()
+        .reindex(ORDER5)
+        .fillna(0)
+        .astype(int)
+        .to_frame("VIN_unicos")
+    )
+    tele_estado_counts["%"] = (
+        tele_estado_counts["VIN_unicos"] /
+        tele_estado_counts["VIN_unicos"].sum() * 100
+    ).round(2)
+else:
+    tele_estado_counts = pd.DataFrame(
+        {"VIN_unicos": [0]*len(ORDER5), "%": [0]*len(ORDER5)},
+        index=ORDER5
+    )
 
 # GPS según REGLA
 gpsr_estado_counts = (
@@ -444,8 +320,10 @@ gpsr_estado_counts = (
     .to_frame("VIN_unicos")
 )
 if gpsr_estado_counts["VIN_unicos"].sum() > 0:
-    gpsr_estado_counts["%"] = (gpsr_estado_counts["VIN_unicos"] /
-                               gpsr_estado_counts["VIN_unicos"].sum() * 100).round(2)
+    gpsr_estado_counts["%"] = (
+        gpsr_estado_counts["VIN_unicos"] /
+        gpsr_estado_counts["VIN_unicos"].sum() * 100
+    ).round(2)
 else:
     gpsr_estado_counts["%"] = 0.0
 
@@ -504,39 +382,38 @@ st.markdown("---")
 # ---------- Histórico (si existe) ----------
 st.subheader("Histórico de conectividad (snapshot diario)")
 
+
 if hist_df is None or hist_df.empty:
-    st.info("No se encontró `historico_conectividad.xlsx` en la carpeta data/ o está vacío.")
+    st.info("No se encontró historico_conectividad.xlsx (hoja 'historico') o está vacío.")
 else:
-    # Ordenar por fecha
-    hist_df = hist_df.sort_values("snapshot_date")
+    # Copia y ordena
+    h = hist_df.copy()
+    h = h.dropna(subset=["fecha"])
+    h = h.sort_values("fecha")
 
-    # Selección de métricas a mostrar
-    metricas_hist = {
-        "Telemetría 0–30 %": "tele_0_30_pct",
-        "Telemetría desconectado 31+ %": "tele_desconectado_31p_pct",
-        "Telemetría nunca %": "tele_nunca_pct",
-        "GPS (regla) 0–15 %": "gps_regla_0_15_pct",
-        "GPS (regla) desconectado 16+ %": "gps_regla_desconectado_16p_pct",
-        "GPS (regla) nunca %": "gps_regla_nunca_pct",
-        "GPS global 0–15 %": "gps_global_0_15_pct",
-        "GPS global desconectado 16+ %": "gps_global_desconectado_16p_pct",
-        "GPS global nunca %": "gps_global_nunca_pct",
-    }
-
-    metricas_sel = st.multiselect(
-        "Métricas históricas a mostrar:",
-        options=list(metricas_hist.keys()),
-        default=["Telemetría 0–30 %", "GPS (regla) 0–15 %"]
+    # Pivot: filas = fecha, columnas = resumen, valores = pct_0_30
+    pivot = (
+        h.pivot(index="fecha", columns="resumen", values="pct_0_30")
+         .sort_index()
     )
 
-    cols_sel = [metricas_hist[k] for k in metricas_sel if metricas_hist[k] in hist_df.columns]
+    # Renombrar columnas para la leyenda (ajusta los textos si quieres)
+    col_rename = {
+        "Telemetría": "Telemetría",
+        "GPS (según REGLA)": "GPS_Copiloto",
+        "GPS (todas con gps_timestamp)": "wicar_gps",
+    }
+    pivot = pivot.rename(columns=col_rename)
 
-    if cols_sel:
-        hist_plot = hist_df.set_index("snapshot_date")[cols_sel]
-        st.line_chart(hist_plot)
-        st.dataframe(hist_plot.tail(10))
+    # Solo mantener las columnas que existan
+    cols_exist = [c for c in ["Telemetría", "GPS_Copiloto", "wicar_gps"] if c in pivot.columns]
+    pivot = pivot[cols_exist]
+
+    if pivot.empty:
+        st.info("No hay columnas válidas para graficar en el histórico.")
     else:
-        st.info("Selecciona al menos una métrica para graficar.")
+        st.line_chart(pivot)          # Histograma tipo líneas (como tu gráfico)
+        st.dataframe(pivot.tail(20))  # Tabla con las últimas filas
 
 st.markdown("---")
 st.caption("Dashboard local – basado en master_status_inner_qs_ready.csv e historico_conectividad.xlsx")
