@@ -2,8 +2,12 @@ name: Ejecutar Pipeline Telemetría Diario
 
 on:
   schedule:
-    - cron: "0 8 * * *"   # 08:00 UTC = 05:00 Chile
+    - cron: "0 8 * * *" # 08:00 UTC = 05:00 Chile
   workflow_dispatch:      # Permite ejecutarlo manualmente
+
+# Otorga permisos de escritura al token predeterminado para poder hacer el push de resultados
+permissions:
+  contents: write
 
 jobs:
   run-pipeline:
@@ -21,26 +25,36 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install pandas numpy requests python-dotenv openpyxl boto3 pytz
+          # Asegúrate de incluir streamlit y cualquier otra dependencia de app.py
+          pip install pandas numpy requests python-dotenv openpyxl boto3 pytz streamlit
 
-      - name: Run pipeline.py
+      # --- 1. Generar la Data (pipeline.py) ---
+      - name: 📈 Run pipeline.py (Generar y actualizar data)
         env:
           COPILOTO_EMAIL: ${{ secrets.COPILOTO_EMAIL }}
           COPILOTO_PASSWORD: ${{ secrets.COPILOTO_PASSWORD }}
         run: |
+          # El script pipeline.py debe generar los archivos en outQS/
           python pipeline.py
+          
+      # --- 2. Subir los Archivos Generados ---
+      # Usa un action dedicado para un commit y push seguro
+      - name: 💾 Commit & Push results
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          file_pattern: outQS/master_status_inner_qs_ready.csv outQS/historico_conectividad.xlsx
+          commit_message: "Auto-update Telemetría Diario $(date)"
+          # El token utiliza el permiso 'contents: write' definido arriba
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Commit & Push results
+      # --- 3. Ejecutar el Dashboard (app.py con Streamlit) ---
+      - name: 🖥️ Run app.py (Iniciar Streamlit Dashboard)
+        # Nota: La ejecución de app.py dentro de GitHub Actions es
+        # para *ejecutar* el script. Si el objetivo es *hostear* el dashboard,
+        # necesitarás un servicio externo (como Streamlit Cloud o un servidor).
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          git add outQS/master_status_inner_qs_ready.csv
-          git add outQS/historico_conectividad.xlsx
-          
-          if git diff --cached --quiet; then
-            echo "No hay cambios para subir."
-          else
-            git commit -m "Auto-update pipeline $(date)"
-            git push
-          fi
+          echo "Iniciando la ejecución de app.py con Streamlit..."
+          # Streamlit por defecto se ejecuta en el puerto 8501
+          # Este paso se ejecutará y finalizará.
+          # Si necesitas que el dashboard se mantenga activo, este no es el método.
+          streamlit run app.py --server.port 8501
