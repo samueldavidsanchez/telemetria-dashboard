@@ -1,0 +1,46 @@
+name: Ejecutar Pipeline Telemetría Diario
+
+on:
+  schedule:
+    - cron: "0 8 * * *"   # 08:00 UTC = 05:00 Chile
+  workflow_dispatch:      # Permite ejecutarlo manualmente
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pandas numpy requests python-dotenv openpyxl boto3 pytz
+
+      - name: Run pipeline.py
+        env:
+          COPILOTO_EMAIL: ${{ secrets.COPILOTO_EMAIL }}
+          COPILOTO_PASSWORD: ${{ secrets.COPILOTO_PASSWORD }}
+        run: |
+          python pipeline.py
+
+      - name: Commit & Push results
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add outQS/master_status_inner_qs_ready.csv
+          git add outQS/historico_conectividad.xlsx
+          
+          if git diff --cached --quiet; then
+            echo "No hay cambios para subir."
+          else
+            git commit -m "Auto-update pipeline $(date)"
+            git push
+          fi
