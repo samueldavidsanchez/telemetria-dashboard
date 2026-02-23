@@ -1,0 +1,15 @@
+Envió de data Semanal con unidades con problemas. Con copia a Fredy Mutis, Andres Cuellar y Natalia,
+
+Enviar unidades con las fechas de contrato prolongada,
+
+- Ahora mismo enviar correo de las unidades que se gestionaron en octubre y aun no se reparan,
+-
+
+probemos un t2 y si funciona instalemos en el de Alejandro Schineder. 
+ 
+
+enviar reporte con todos los dispositivos que esten con problemas a Fredy mutis,
+tiene que tener unidad que falla cliente 
+
+enviarlo mañana y de ahí hacemos automatización para que se envia semanal
+
